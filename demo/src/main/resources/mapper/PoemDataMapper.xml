@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD MyBatis Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.example.demo.mapper.PoemDataMapper">
+
+    <!-- 插入诗歌数据（保存 title、author 和 timestamp） -->
+    <insert id="insertPoemData">
+        INSERT INTO poem_data (title, author, timestamp)
+        VALUES (#{title}, #{author}, #{timestamp})
+    </insert>
+
+</mapper>
