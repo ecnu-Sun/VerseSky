@@ -14,7 +14,7 @@ import os
 from dotenv import load_dotenv
 import requests
 from langchain.output_parsers import PydanticOutputParser
-
+from langchain.agents import AgentExecutor
 app = FastAPI()
 
 
@@ -24,7 +24,9 @@ class UserInput(BaseModel):
 
 # 定义响应数据模型
 class ResponseData(BaseModel):
-    response: str
+    action: str
+    data: dict  # 如果 `data` 的结构固定，可以进一步细化
+
 
 # 定义诗歌结构数据模型
 class PoemStructure(BaseModel):
@@ -66,13 +68,13 @@ class SiliconFlowLLM(LLM):
 # 定义agent所使用的LLM
 class CustomLLM(SiliconFlowLLM):
     def _call(self, prompt: str, stop: Optional[List[str]] = None) -> str:
-        if "翻译" in prompt:
-            prompt = (
-                "你是一个文言文学习助手，你的任务是帮助用户翻译古文,赏析古文，回答用户的问题。"
-                "注意：当用户提到翻译文言文时，必须调用 `Translate` 工具。\n"
-                + prompt
-            )
+        prompt = (
+            "你是一个文言文学习助手，你的任务是帮助用户翻译古文,赏析古文，回答用户的问题。"
+            "注意：当用户提到'翻译'文言文时，禁止直接给出翻译，'必须'调用 `Translate` 工具进行翻译。\n"
+            + prompt
+        )
         return super()._call(prompt, stop)
+
 
 # 加载 FAISS 索引和元数据
 def load_faiss_index(index_path, metadata_path):
@@ -81,10 +83,28 @@ def load_faiss_index(index_path, metadata_path):
         metadata = pickle.load(f)
     return index, metadata
 
-
+# 加载 Faiss 索引和元数据
+index_path = "translation_refer/faiss_index.bin"
+metadata_path = "translation_refer/metadata.pkl"
 
 # 初始化资源
 load_dotenv()
+
+print("开始加载 FAISS 索引...")
+index, metadata = load_faiss_index(index_path, metadata_path)
+print("FAISS 索引加载完成。")
+
+print("开始加载 SentenceTransformer 模型...")
+# 首次运行时，需要下载 SentenceTransformer 模型，之后可以直接加载
+# encoder = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
+# encoder.save("saved_model")
+
+# 加载已保存的模型
+encoder = SentenceTransformer("saved_model")
+print("模型加载完成。")
+
+
+
 
 # agent所使用的LLM
 llm = CustomLLM(
@@ -94,12 +114,8 @@ llm = CustomLLM(
 
 memory = ConversationBufferMemory(memory_key="chat_history", return_messages=True)
 
-# 加载 Faiss 索引和元数据
-index_path = "translation_refer/faiss_index.bin"
-metadata_path = "translation_refer/metadata.pkl"
 
-index, metadata = load_faiss_index(index_path, metadata_path)
-encoder = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
+
 
 # 初始化 PromptTemplates
 output_parser = PydanticOutputParser(pydantic_object=PoemStructure)
@@ -149,28 +165,27 @@ def translation_tool(input_text: str) -> dict:
         poem = translate_poem(input_text, llm, index, metadata, encoder, templates)
         
         # 准备返回的数据
-        poem_data = {
-            "title": poem.title,
-            "author": poem.author,
-            "lines": poem.lines,
-            "modern_translation": poem.modern_translation,
-            "modern_lines": poem.modern_lines,
-            "keywords_analysis": poem.keywords_analysis,
-        }
+        # poem_data = {
+        #     "title": poem.title,
+        #     "author": poem.author,
+        #     "lines": poem.lines,
+        #     "modern_translation": poem.modern_translation,
+        #     "modern_lines": poem.modern_lines,
+        #     "keywords_analysis": poem.keywords_analysis,
+        # }
 
-        # 准备发送到 Java 后端的数据
-        java_backend_url = "http://your-java-backend/api/endpoint"      # 将 URL 替换为实际的 Java 后端接口地址
-        response = requests.post(java_backend_url, json={"action": "update_view", "data": poem_data})
+        # # 准备发送到 Java 后端的数据
+        # java_backend_url = "http://your-java-backend/api/endpoint"      # 将 URL 替换为实际的 Java 后端接口地址
+        # response = requests.post(java_backend_url, json={"action": "update_view", "data": poem_data})
 
-        # 发送失败，在对话中返回翻译信息
-        if response.status_code != 200:
-            return {
-                    "message": f"翻译成功，但发送数据到后端失败：{response.text}，以下是翻译结果：",
-                    "poem_data": poem_data
-                }
+        # # 发送失败，在对话中返回翻译信息
+        # if response.status_code != 200:
+        # return f"翻译成功，但发送数据到后端失败：{response.text}，以下是翻译结果：{poem_data.mordern_translation}"
+        # return f"{poem.modern_translation}\n\n已经通过翻译工具得翻译结果，现在需要将翻译结果展示给用户"
+        return {"status": "success", "translation": poem.modern_translation}
 
         # 发送成功，直接在对话中返回翻译成功消息即可
-        return "成功翻译，请查看翻译展示窗口"
+        # return "成功翻译，请查看翻译展示窗口"
 
     except Exception as e:
         return {"action": "error", "data": {"message": str(e)}}
@@ -180,7 +195,7 @@ tools = [
     Tool(
         name="Translate",
         func=translation_tool,
-        description="翻译古诗文并返回结构化数据，包括标题、作者、原文、现代翻译、逐句翻译和关键词解析。",
+        description="翻译文言文，将得到的结果全部展示给用户，不能做任何分析。",
     )
 ]
 
@@ -190,6 +205,8 @@ agent = initialize_agent(
     agent="conversational-react-description",
     memory=memory,
     verbose=True,
+    return_only_outputs=True,
+    handle_parsing_errors=True,  # 捕获解析错误
 )
 
 # 定义 API 路由
@@ -201,7 +218,7 @@ async def process_input(user_input: UserInput):
     try:
         response = agent.invoke({"input": input_text})
 
-        # 如果返回已是统一格式，直接返回
+        # 如果返回已经满足格式，直接返回
         if isinstance(response, dict) and "action" in response:
             return response
 
